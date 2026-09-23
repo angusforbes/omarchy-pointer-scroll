@@ -432,7 +432,7 @@ Panel {
             TuneRow { key: "scroll_speed"; label: "Overall scroll speed"; hint: "Scales everything below"; minimum: 0.1; maximum: 2.0 }
             TuneRow { key: "scroll_slow"; label: "Careful scroll"; hint: "Slow two-finger drag"; minimum: 0.1; maximum: 2.0; visible: root.val("accel") }
             TuneRow { key: "scroll_fast"; label: "Fast scroll"; hint: "Quick swipe"; minimum: 0.3; maximum: 5.0; visible: root.val("accel") }
-            TuneRow { key: "terminal_scroll"; label: "Terminal (Foot) scroll"; hint: "Replaces overall scroll speed inside Foot / herdr"; minimum: 0.1; maximum: 4.0 }
+            TuneRow { key: "terminal_scroll"; label: "Terminal scroll"; hint: "Replaces overall scroll speed in Alacritty, kitty and foot"; minimum: 0.1; maximum: 4.0 }
 
             // ---------- Other ----------
             // Plain pointer speed: only shown when smart acceleration is off (then it is the touchpad's speed).
