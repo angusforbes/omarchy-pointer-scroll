@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "angusforbes.pointer-scroll",
+  "name": "Pointer & Scroll",
+  "version": "0.1.0",
+  "author": "Angus Forbes",
+  "license": "MIT",
+  "description": "Touchpad pointer and scroll acceleration for Omarchy: slow finger = precise, fast flick = far, with a live curve graph.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Panel.qml" },
+  "barWidget": {
+    "displayName": "Pointer & Scroll",
+    "description": "Tune touchpad pointer acceleration, scroll acceleration and scroll speeds, with a live graph.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

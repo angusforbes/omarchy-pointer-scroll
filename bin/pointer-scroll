@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""pointer-scroll - touchpad pointer & scroll acceleration for Omarchy (Hyprland, libinput).
+
+Backend of the "Pointer & Scroll" Omarchy bar widget (omarchy-pointer-scroll).
+
+Files:
+  ~/.config/hypr/pointer_scroll.json   your settings (the sliders)
+  ~/.config/hypr/pointer_scroll.lua    generated Hyprland config (do not hand-edit)
+  ~/.config/hypr/input.lua             gets one line: require("hypr.pointer_scroll")  (added by `install`)
+
+Usage:
+  pointer-scroll get                     print settings, derived curves and install status as JSON
+  pointer-scroll set KEY VALUE [...]     change settings, regenerate, reload Hyprland
+  pointer-scroll reset                   restore the default settings
+  pointer-scroll apply                   regenerate + reload from the saved settings
+  pointer-scroll install                 add the require line to input.lua (backed up first), then apply
+  pointer-scroll uninstall               remove the require line and the generated file, reload
+
+Every change reloads Hyprland and is rolled back automatically if `hyprctl configerrors` complains.
+
+The curves use libinput's "custom" acceleration profile (step = 1 unit/ms, roughly 25 mm/s of finger
+speed). For x = 1..8:
+  amplification(x) = slow + (fast - slow) * ((x - 1) / 7) ** ramp
+  output speed(x)  = x * amplification(x)          (libinput extrapolates linearly beyond x = 8)
+slow = amplification when moving carefully (~25 mm/s), fast = on a quick flick (~200 mm/s),
+ramp > 1 keeps the pointer precise for longer before it speeds up.
+"""
+import json, os, re, shutil, subprocess, sys, time
+
+HOME = os.path.expanduser("~")
+HYPR = os.path.join(HOME, ".config/hypr")
+STATE = os.path.join(HYPR, "pointer_scroll.json")
+LUA = os.path.join(HYPR, "pointer_scroll.lua")
+INPUT_LUA = os.path.join(HYPR, "input.lua")
+HYPRLAND_LUA = os.path.join(HYPR, "hyprland.lua")
+BACKUPS = os.path.join(HOME, ".local/share/omarchy-pointer-scroll/backups")
+REQUIRE = 'require("hypr.pointer_scroll")'
+REQUIRE_BLOCK = (
+    "\n-- Pointer & Scroll bar widget (omarchy-pointer-scroll): touchpad acceleration curves and\n"
+    "-- scroll speeds, generated into hypr/pointer_scroll.lua. Remove this line to go back to defaults.\n"
+    + REQUIRE + "\n"
+)
+IPC_TARGET = "angusforbes.pointer-scroll"
+
+DEFAULTS = {
+    "accel": True,            # custom slow/fast curves (False = libinput's plain adaptive profile)
+    "pointer_slow": 0.35,     # pointer amplification when moving carefully (selecting text)
+    "pointer_fast": 1.6,      # pointer amplification on a quick flick across the screen
+    "pointer_ramp": 1.5,      # how late the speed-up kicks in (higher = precise for longer)
+    "scroll_slow": 0.6,       # two-finger scroll amplification, slow drag
+    "scroll_fast": 1.6,       # two-finger scroll amplification, fast swipe
+    "scroll_ramp": 1.0,
+    "scroll_speed": 0.4,      # overall touchpad scroll multiplier (input:touchpad:scroll_factor; Omarchy default 0.4)
+    "terminal_scroll": 1.5,   # touchpad scroll multiplier inside Alacritty/kitty/foot (Omarchy default 1.5)
+    "sensitivity": 0.0,       # plain pointer speed (-1..1); used for the touchpad when accel is off, and for mice
+}
+LIMITS = {
+    "pointer_slow": (0.05, 1.5), "pointer_fast": (0.3, 5.0), "pointer_ramp": (0.5, 3.0),
+    "scroll_slow": (0.05, 3.0), "scroll_fast": (0.1, 6.0), "scroll_ramp": (0.5, 3.0),
+    "scroll_speed": (0.05, 3.0), "terminal_scroll": (0.05, 5.0), "sensitivity": (-1.0, 1.0),
+}
+
+
+# ---------------------------------------------------------------------------------------- state
+def load():
+    s = dict(DEFAULTS)
+    try:
+        with open(STATE) as f:
+            s.update({k: v for k, v in json.load(f).items() if k in DEFAULTS})
+    except (OSError, ValueError):
+        pass
+    return s
+
+
+def touchpads():
+    """Names of touchpads/trackpads Hyprland knows about."""
+    try:
+        r = subprocess.run(["hyprctl", "devices", "-j"], capture_output=True, text=True, timeout=10)
+        mice = json.loads(r.stdout).get("mice", [])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    return [m["name"] for m in mice if re.search(r"touchpad|trackpad", m.get("name", ""), re.I)]
+
+
+def installed():
+    try:
+        with open(INPUT_LUA) as f:
+            return any(line.strip() == REQUIRE for line in f)
+    except OSError:
+        return False
+
+
+# ---------------------------------------------------------------------------------------- curves
+def curve(slow, fast, ramp, n=8):
+    """Output speeds at x = 0..n (libinput custom points)."""
+    pts = [0.0]
+    for x in range(1, n + 1):
+        t = (x - 1) / (n - 1)
+        pts.append(round(x * (slow + (fast - slow) * t ** ramp), 3))
+    return pts
+
+
+def fmt(v):
+    return ("%.3f" % v).rstrip("0").rstrip(".")
+
+
+def derived(s):
+    p = curve(s["pointer_slow"], s["pointer_fast"], s["pointer_ramp"])
+    c = curve(s["scroll_slow"], s["scroll_fast"], s["scroll_ramp"])
+    return {
+        "pointer_points": p, "scroll_points": c,
+        "pointer_profile": "custom 1 " + " ".join(fmt(v) for v in p),
+        "scroll_profile": "1 " + " ".join(fmt(v) for v in c),
+    }
+
+
+# ---------------------------------------------------------------------------------------- render
+CLICK_WATCH = """-- Close the Pointer & Scroll panel on any click outside it, like the other bar panels, without
+-- blocking pointer movement or scrolling elsewhere. Non-consuming: the click still reaches whatever
+-- you clicked. Inert unless the panel's "open" flag file exists.
+local pointer_scroll_flag = (os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/omarchy-pointer-scroll-open"
+local function pointer_scroll_click()
+  local f = io.open(pointer_scroll_flag, "r")
+  if f then
+    f:close()
+    hl.dispatch(hl.dsp.exec_cmd("qs -p /usr/share/omarchy/shell ipc call %s outsideClick"))
+  end
+end
+hl.bind("mouse:272", pointer_scroll_click, { non_consuming = true })
+hl.bind("mouse:273", pointer_scroll_click, { non_consuming = true })
+""" % IPC_TARGET
+
+
+def render(s, pads):
+    d = derived(s)
+    out = [
+        "-- GENERATED by omarchy-pointer-scroll (the Pointer & Scroll bar widget).",
+        "-- Change settings from the panel or with `pointer-scroll set KEY VALUE`; edits here are overwritten.",
+        "-- Settings live in pointer_scroll.json next to this file.",
+        "hl.config({",
+        "  input = {",
+        f"    sensitivity = {fmt(s['sensitivity'])},",
+        "    touchpad = {",
+        f"      scroll_factor = {fmt(s['scroll_speed'])},",
+        "    },",
+        "  },",
+        "})",
+        "",
+    ]
+    if s["accel"] and pads:
+        out.append("-- Touchpads: slow finger = precise, fast flick = far. Custom profiles ignore sensitivity.")
+        for name in pads:
+            out += [
+                "hl.device({",
+                f"  name = {json.dumps(name)},",
+                f'  accel_profile = "{d["pointer_profile"]}",',
+                f'  scroll_points = "{d["scroll_profile"]}",',
+                "})",
+            ]
+    elif s["accel"]:
+        out += [
+            "-- No touchpad found: apply the curves to all pointer devices.",
+            "hl.config({",
+            "  input = {",
+            f'    accel_profile = "{d["pointer_profile"]}",',
+            f'    scroll_points = "{d["scroll_profile"]}",',
+            "  },",
+            "})",
+        ]
+    else:
+        out.append("-- Smart acceleration off: libinput's adaptive profile at the plain sensitivity.")
+        for name in pads:
+            out += ["hl.device({", f"  name = {json.dumps(name)},", '  accel_profile = "adaptive",',
+                    f"  sensitivity = {fmt(s['sensitivity'])},", "})"]
+    out += [
+        "",
+        "-- Terminals: touchpad scroll multiplier (replaces Omarchy's 1.5).",
+        f'o.window("^(Alacritty|kitty|foot)$", {{ scroll_touchpad = {fmt(s["terminal_scroll"])} }})',
+        "",
+        CLICK_WATCH,
+    ]
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------------------- apply
+def write_atomic(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def reload_ok():
+    subprocess.run(["hyprctl", "reload"], capture_output=True, timeout=15)
+    time.sleep(0.4)
+    r = subprocess.run(["hyprctl", "configerrors"], capture_output=True, text=True, timeout=10)
+    err = r.stdout.strip()
+    return err == "", err
+
+
+def apply(s, prev_lua=None):
+    write_atomic(LUA, render(s, touchpads()))
+    ok, err = reload_ok()
+    if not ok:
+        if prev_lua is not None:
+            write_atomic(LUA, prev_lua)
+        else:
+            os.remove(LUA)
+        reload_ok()
+        raise SystemExit("Hyprland rejected the settings (rolled back):\n" + err)
+    write_atomic(STATE, json.dumps(s, indent=2) + "\n")
+
+
+def backup(path):
+    os.makedirs(BACKUPS, exist_ok=True)
+    dst = os.path.join(BACKUPS, os.path.basename(path) + "." + time.strftime("%Y%m%d-%H%M%S"))
+    shutil.copy2(path, dst)
+    return dst
+
+
+def install(s):
+    if not os.path.exists(HYPRLAND_LUA) or not os.path.exists(INPUT_LUA):
+        raise SystemExit("Needs Omarchy's Lua Hyprland config (~/.config/hypr/hyprland.lua and input.lua).")
+    prev = open(LUA).read() if os.path.exists(LUA) else None
+    write_atomic(LUA, render(s, touchpads()))      # the module must exist before input.lua requires it
+    if not installed():
+        backup(INPUT_LUA)
+        text = open(INPUT_LUA).read()
+        write_atomic(INPUT_LUA, text.rstrip("\n") + "\n" + REQUIRE_BLOCK)
+    ok, err = reload_ok()
+    if not ok:
+        uninstall(quiet=True)
+        if prev is not None:
+            write_atomic(LUA, prev)
+        raise SystemExit("Hyprland rejected the setup (undone):\n" + err)
+    write_atomic(STATE, json.dumps(s, indent=2) + "\n")
+
+
+def uninstall(quiet=False):
+    if os.path.exists(INPUT_LUA) and installed():
+        backup(INPUT_LUA)
+        lines = open(INPUT_LUA).read().split("\n")
+        keep, i = [], 0
+        while i < len(lines):
+            line = lines[i]
+            if line.strip() == REQUIRE:
+                # drop our two comment lines just above it too
+                while keep and keep[-1].startswith("-- ") and ("pointer_scroll" in keep[-1] or "Pointer & Scroll" in keep[-1]):
+                    keep.pop()
+                if keep and keep[-1].strip() == "":
+                    keep.pop()
+            else:
+                keep.append(line)
+            i += 1
+        write_atomic(INPUT_LUA, "\n".join(keep).rstrip("\n") + "\n")
+    if os.path.exists(LUA):
+        os.remove(LUA)
+    reload_ok()
+    if not quiet:
+        print("Removed the require line and the generated config (settings kept in %s)." % STATE)
+
+
+def parse_value(key, raw):
+    if key == "accel":
+        return str(raw).lower() in ("1", "true", "on", "yes")
+    lo, hi = LIMITS[key]
+    return round(max(lo, min(hi, float(raw))), 3)
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "get"
+    s = load()
+    if cmd == "get":
+        print(json.dumps({**s, **derived(s), "installed": installed(), "touchpads": touchpads(),
+                          "lua_config": os.path.exists(HYPRLAND_LUA),
+                          "defaults": DEFAULTS, "limits": LIMITS}))
+        return
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__)
+        return
+    if cmd == "uninstall":
+        uninstall()
+        return
+    prev = open(LUA).read() if os.path.exists(LUA) else None
+    if cmd == "set":
+        args = argv[2:]
+        if not args or len(args) % 2:
+            raise SystemExit("usage: pointer-scroll set KEY VALUE [KEY VALUE ...]")
+        for k, v in zip(args[::2], args[1::2]):
+            if k not in DEFAULTS:
+                raise SystemExit(f"unknown key {k!r}; known: {', '.join(DEFAULTS)}")
+            s[k] = parse_value(k, v)
+    elif cmd == "reset":
+        s = dict(DEFAULTS)
+    elif cmd == "install":
+        install(s)
+        print(json.dumps({**s, **derived(s), "installed": installed(), "touchpads": touchpads()}))
+        return
+    elif cmd != "apply":
+        raise SystemExit(__doc__)
+    if installed():
+        apply(s, prev)
+    else:
+        # not set up yet: just remember the settings; `install` (the panel's Set up button) applies them
+        write_atomic(STATE, json.dumps(s, indent=2) + "\n")
+    print(json.dumps({**s, **derived(s), "installed": installed(), "touchpads": touchpads()}))
+
+
+if __name__ == "__main__":
+    main(sys.argv)
