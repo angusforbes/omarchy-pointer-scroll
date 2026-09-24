@@ -35,8 +35,9 @@ one per slider:
   the real curve may pass slightly above or below it.
 - **fast** (filled ring, on the curve at the last point) → Fast speed
 
-Dragging stops at a slider's limits, where the curve would leave the chart, or where fast would drop
-below careful (the curve never slopes downwards).
+Dragging stops only at a slider's limits, or where fast would drop below careful (the curve never
+slopes downwards). If the far end of the curve rises above the chart while you drag, it's clipped
+until you let go, then the chart rescales.
 
 The switch in the header turns the curves off again (back to a single plain speed slider).
 **Reset** asks before restoring the defaults.
