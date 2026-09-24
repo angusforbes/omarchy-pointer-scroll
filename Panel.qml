@@ -171,6 +171,36 @@ Panel {
   }
   function fmt(v, digits) { return Number(v).toFixed(digits === undefined ? 2 : digits) }
 
+  // ---- draggable curve points ------------------------------------------------------------
+  // The dots are the points libinput actually receives. Each curve is defined by its sliders, so
+  // dragging a dot solves for the slider that moves it: the first dot sets the careful speed, the last
+  // sets the fast speed, and a middle dot sets "speeds up" so the curve passes exactly through it.
+  function knotCount() { return Math.max(4, Math.min(32, Math.round(Number(root.st.curve_points) || 8))) }
+  function knotXs() {
+    var n = knotCount(), step = 8 / n, xs = []
+    for (var k = 1; k <= n; k++) xs.push(k * step)
+    return xs
+  }
+  readonly property var sliderLimits: ({
+    pointer_slow: [0.1, 1.0], pointer_fast: [0.5, 4.0], pointer_ramp: [0.6, 3.0],
+    scroll_slow: [0.1, 2.0], scroll_fast: [0.3, 5.0], scroll_ramp: [0.6, 3.0] })
+  function solveDrag(which, x, v) {
+    var pre = which === "pointer" ? "pointer_" : "scroll_"
+    if (which === "scroll") v = v / Math.max(0.01, root.val("scroll_speed"))
+    function put(key, val) {
+      var r = root.sliderLimits[key]
+      var o = {}; o[key] = Math.round(Math.max(r[0], Math.min(r[1], val)) * 100) / 100
+      return o
+    }
+    if (x <= 1.0001) return put(pre + "slow", v)
+    if (x >= 7.9999) return put(pre + "fast", v)
+    var slow = Number(root.val(pre + "slow")), fast = Number(root.val(pre + "fast"))
+    if (Math.abs(fast - slow) < 0.005) return ({})
+    var t = (x - 1) / 7
+    var ratio = Math.max(0.002, Math.min(0.998, (v - slow) / (fast - slow)))
+    return put(pre + "ramp", Math.log(ratio) / Math.log(t))
+  }
+
   // ---- bar button ------------------------------------------------------------------------
   BarIconButton {
     id: button
@@ -361,19 +391,43 @@ Panel {
                 anchors.fill: parent
                 property color fg: root.bar.foreground
                 property color accent: Color.accent
+                property color bg: Color.popups.background
+                readonly property real padL: 30
+                readonly property real padB: 16
+                readonly property real padT: 8
+                readonly property real gw: width - padL - 4
+                readonly property real gh: height - padB - padT
+                readonly property real xmax: 16
+                property real ymax: 1.5            // frozen while a dot is being dragged
+                property string hotWhich: ""       // dot under the pointer / being dragged
+                property int hotIndex: -1
+                property bool dragging: false
+
+                function px(x) { return padL + gw * x / xmax }
+                function py(y) { return padT + gh * (1 - y / ymax) }
+                function valueAt(Y) { return ymax * (1 - (Y - padT) / gh) }
+                function computeYmax() {
+                  var m = 0
+                  for (var i = 1; i <= 64; i++) { var x = i / 4; m = Math.max(m, root.pointerGain(x), root.scrollGain(x)) }
+                  return Math.max(1.5, Math.ceil(m * 2) / 2)
+                }
+                function gainOf(which, x) { return which === "pointer" ? root.pointerGain(x) : root.scrollGain(x) }
+                function dotAt(mx, my) {
+                  var xs = root.knotXs(), best = null, bestD = 13
+                  var order = ["scroll", "pointer"]          // pointer wins ties (drawn on top)
+                  for (var o = 0; o < order.length; o++)
+                    for (var k = 0; k < xs.length; k++) {
+                      var d = Math.hypot(px(xs[k]) - mx, py(gainOf(order[o], xs[k])) - my)
+                      if (d <= bestD) { bestD = d; best = { which: order[o], index: k } }
+                    }
+                  return best
+                }
+
                 onPaint: {
+                  if (!dragging) ymax = computeYmax()
                   var ctx = getContext("2d")
                   ctx.reset()
-                  var w = width, h = height, padL = 30, padB = 16, padT = 6
-                  var gw = w - padL - 4, gh = h - padB - padT
-                  var xmax = 16, ymax = 0
-                  for (var i = 1; i <= 64; i++) {
-                    var x = i / 4
-                    ymax = Math.max(ymax, root.pointerGain(x), root.scrollGain(x))
-                  }
-                  ymax = Math.max(1.5, Math.ceil(ymax * 2) / 2)
-                  function px(x) { return padL + gw * x / xmax }
-                  function py(y) { return padT + gh * (1 - y / ymax) }
+                  var w = width, h = height
                   ctx.font = "10px " + root.bar.fontFamily
                   ctx.lineWidth = 1
                   // grid + labels
@@ -393,17 +447,44 @@ Panel {
                   ctx.fillText("swipe", (cCareful + cFlick) / 2 - wS / 2 - 6, h - 3)   // 6 px ~ 1 mm left of centre
                   ctx.fillText("flick", cFlick - wF / 2 - 6, h - 3)   // extra 1 mm in from the right
                   // curves
-                  function curve(fn, color) {
+                  function curve(which, color) {
                     ctx.strokeStyle = color; ctx.lineWidth = 2
                     ctx.beginPath()
                     for (var k = 1; k <= 64; k++) {
-                      var xx = k / 4, yy = fn(xx)
+                      var xx = k / 4, yy = gainOf(which, xx)
                       if (k === 1) ctx.moveTo(px(xx), py(yy)); else ctx.lineTo(px(xx), py(yy))
                     }
                     ctx.stroke()
                   }
-                  curve(root.scrollGain, accent)
-                  curve(root.pointerGain, fg)
+                  // the points libinput receives, as draggable dots
+                  function dots(which, color) {
+                    var xs = root.knotXs()
+                    for (var k = 0; k < xs.length; k++) {
+                      var hot = hotWhich === which && hotIndex === k
+                      var r = hot ? 5.5 : 3.5
+                      ctx.beginPath(); ctx.arc(px(xs[k]), py(gainOf(which, xs[k])), r + 1.5, 0, 2 * Math.PI)
+                      ctx.fillStyle = bg; ctx.fill()
+                      ctx.beginPath(); ctx.arc(px(xs[k]), py(gainOf(which, xs[k])), r, 0, 2 * Math.PI)
+                      ctx.fillStyle = color; ctx.fill()
+                    }
+                  }
+                  curve("scroll", accent)
+                  curve("pointer", fg)
+                  dots("scroll", accent)
+                  dots("pointer", fg)
+                  // value of the hot dot
+                  if (hotIndex >= 0 && hotWhich !== "") {
+                    var hx = root.knotXs()[hotIndex]
+                    if (hx !== undefined) {
+                      var hv = gainOf(hotWhich, hx)
+                      var label = hv.toFixed(2) + "×"
+                      var lw = ctx.measureText(label).width
+                      var lx = Math.min(w - 4 - lw, Math.max(padL, px(hx) - lw / 2))
+                      var ly = py(hv) - 10 < padT + 8 ? py(hv) + 18 : py(hv) - 10
+                      ctx.fillStyle = hotWhich === "pointer" ? fg : accent
+                      ctx.fillText(label, lx, ly)
+                    }
+                  }
                 }
                 Connections {
                   target: root
@@ -411,7 +492,47 @@ Panel {
                   function onDraftChanged() { graph.requestPaint() }
                 }
                 onWidthChanged: requestPaint()
+                onHotIndexChanged: requestPaint()
+                onHotWhichChanged: requestPaint()
                 Component.onCompleted: requestPaint()
+              }
+
+              MouseArea {
+                id: dotMouse
+                anchors.fill: graph
+                hoverEnabled: true
+                preventStealing: true
+                acceptedButtons: Qt.LeftButton
+                cursorShape: (graph.hotIndex >= 0) ? Qt.SizeVerCursor : Qt.ArrowCursor
+                property var pendingChange: ({})
+
+                function hover(mx, my) {
+                  var d = graph.dotAt(mx, my)
+                  graph.hotWhich = d ? d.which : ""
+                  graph.hotIndex = d ? d.index : -1
+                }
+                onPositionChanged: function(mouse) {
+                  if (!graph.dragging) { hover(mouse.x, mouse.y); return }
+                  var x = root.knotXs()[graph.hotIndex]
+                  var change = root.solveDrag(graph.hotWhich, x, Math.max(0.02, graph.valueAt(mouse.y)))
+                  for (var k in change) root.preview(k, change[k])
+                  pendingChange = Object.assign({}, pendingChange, change)
+                }
+                onPressed: function(mouse) {
+                  hover(mouse.x, mouse.y)
+                  if (graph.hotIndex < 0) { mouse.accepted = false; return }
+                  pendingChange = ({})
+                  graph.dragging = true
+                }
+                onReleased: function(mouse) {
+                  if (!graph.dragging) return
+                  graph.dragging = false
+                  for (var k in pendingChange) root.setKey(k, pendingChange[k])
+                  pendingChange = ({})
+                  hover(mouse.x, mouse.y)
+                  graph.requestPaint()
+                }
+                onExited: if (!graph.dragging) { graph.hotWhich = ""; graph.hotIndex = -1 }
               }
             }
             Row {
@@ -419,7 +540,7 @@ Panel {
               spacing: Style.space(14)
               Text { text: "━ pointer"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
               Text { text: "━ scroll"; color: Color.accent; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
-              Text { text: "amplification vs finger speed"; color: Qt.darker(root.bar.foreground, 1.6); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
+              Text { text: "drag a dot to reshape"; color: Qt.darker(root.bar.foreground, 1.6); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
             }
 
             PanelSeparator { width: parent.width }
@@ -435,6 +556,7 @@ Panel {
             TuneRow { key: "scroll_speed"; label: "Overall scroll speed"; hint: "Scales everything below"; minimum: 0.1; maximum: 2.0 }
             TuneRow { key: "scroll_slow"; label: "Careful scroll"; hint: "Slow two-finger drag"; minimum: 0.1; maximum: 2.0; visible: root.val("accel") }
             TuneRow { key: "scroll_fast"; label: "Fast scroll"; hint: "Quick swipe"; minimum: 0.3; maximum: 5.0; visible: root.val("accel") }
+            TuneRow { key: "scroll_ramp"; label: "Scroll speeds up"; hint: "Left = sooner, right = stays fine longer"; minimum: 0.6; maximum: 3.0; suffix: ""; visible: root.val("accel") }
             TuneRow { key: "terminal_scroll"; label: "Terminal scroll"; hint: "Replaces overall scroll speed in Alacritty, kitty and foot"; minimum: 0.1; maximum: 4.0 }
 
             // ---------- Other ----------
