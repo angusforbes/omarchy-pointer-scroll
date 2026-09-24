@@ -495,15 +495,26 @@ Panel {
                   ctx.fillText("careful", cCareful - wC / 2, h - 3)
                   ctx.fillText("swipe", (cCareful + cFlick) / 2 - wS / 2 - 6, h - 3)   // 6 px ~ 1 mm left of centre
                   ctx.fillText("flick", cFlick - wF / 2 - 6, h - 3)   // extra 1 mm in from the right
-                  // curves
+                  // curves: libinput's amplification evaluated at every pixel column, from zero finger speed
+                  // (flat up to the first point) through the points and on into the extrapolated part
                   function curve(which, color) {
                     ctx.strokeStyle = color; ctx.lineWidth = 2
                     ctx.beginPath()
-                    for (var k = 1; k <= 64; k++) {
-                      var xx = k / 4, yy = gainOf(which, xx)
-                      if (k === 1) ctx.moveTo(px(xx), py(yy)); else ctx.lineTo(px(xx), py(yy))
+                    var cols = Math.max(2, Math.round(gw))
+                    for (var c = 0; c <= cols; c++) {
+                      var xx = Math.max(1e-4, xmax * c / cols), yy = gainOf(which, xx)
+                      if (c === 0) ctx.moveTo(px(xx), py(yy)); else ctx.lineTo(px(xx), py(yy))
                     }
                     ctx.stroke()
+                  }
+                  // the points libinput receives (not draggable): at each one the curve value is exact
+                  function points(which, color) {
+                    var n = root.knotCount(), step = 8 / n
+                    ctx.fillStyle = color
+                    for (var k = 1; k <= n; k++) {
+                      var kx = k * step
+                      ctx.beginPath(); ctx.arc(px(kx), py(gainOf(which, kx)), n > 16 ? 1.8 : 2.4, 0, 2 * Math.PI); ctx.fill()
+                    }
                   }
                   // levers: careful + fast sit on the curve; speeds up shows the smooth formula's bend
                   function levers(which, color) {
@@ -526,6 +537,8 @@ Panel {
                   ctx.beginPath(); ctx.rect(padL, 0, w - 4 - padL, py(0)); ctx.clip()
                   curve("scroll", accent)
                   curve("pointer", fg)
+                  points("scroll", accent)
+                  points("pointer", fg)
                   ctx.restore()
                   levers("scroll", accent)
                   levers("pointer", fg)
