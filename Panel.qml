@@ -26,7 +26,7 @@ Panel {
   // ---- state ---------------------------------------------------------------------------
   property var st: ({ accel: true, pointer_slow: 0.35, pointer_fast: 1.6, pointer_ramp: 1.5,
                       scroll_slow: 0.6, scroll_fast: 1.6, scroll_ramp: 1.0, scroll_speed: 0.4,
-                      terminal_scroll: 1.5, sensitivity: 0.0, curve_points: 8, installed: true, touchpads: [] })
+                      terminal_scroll: 1.5, sensitivity: 0.0, curve_points: 4, installed: true, touchpads: [] })
   // backend script shipped inside the plugin folder
   readonly property string cli: String(Qt.resolvedUrl("bin/pointer-scroll")).replace(/^file:\/\//, "")
   // set up = input.lua loads the generated config (the panel offers a one-click "Set up" otherwise)
@@ -150,12 +150,13 @@ Panel {
 
   // ---- curve maths (mirrors bin/pointer-scroll) ------------------------------------------------
   // amplification at finger speed x (units/ms, 1 ~ 25 mm/s), exactly as libinput computes it from the
-  // points bin/pointer-scroll generates: `curve_points` knots spread over x = 0..8, straight lines
-  // (in output speed) between them, linear extrapolation beyond x = 8.
+  // points bin/pointer-scroll generates: `curve_points` knots spread over x = 0..8 (the first knot is the
+  // careful speed, the last the fast speed), straight lines (in output speed) between them, linear
+  // extrapolation beyond x = 8.
   function gainAt(slow, fast, ramp, x) {
-    var n = Math.max(4, Math.min(32, Math.round(Number(root.st.curve_points) || 8)))
+    var n = root.knotCount()
     var step = 8 / n
-    function g(v) { return v <= 1 ? slow : slow + (fast - slow) * Math.pow((v - 1) / 7, ramp) }
+    function g(v) { return v <= step ? slow : slow + (fast - slow) * Math.pow((v - step) / (8 - step), ramp) }
     function yk(k) { return k * step * g(k * step) }          // output speed at knot k
     var kf = x / step
     var y
@@ -171,20 +172,33 @@ Panel {
   }
   function fmt(v, digits) { return Number(v).toFixed(digits === undefined ? 2 : digits) }
 
-  // ---- draggable curve points ------------------------------------------------------------
-  // The dots are the points libinput actually receives. Each curve is defined by its sliders, so
-  // dragging a dot solves for the slider that moves it: the first dot sets the careful speed, the last
-  // sets the fast speed, and a middle dot sets "speeds up" so the curve passes exactly through it.
-  function knotCount() { return Math.max(4, Math.min(32, Math.round(Number(root.st.curve_points) || 8))) }
-  function knotXs() {
-    var n = knotCount(), step = 8 / n, xs = []
-    for (var k = 1; k <= n; k++) xs.push(k * step)
-    return xs
+  // ---- chart levers ------------------------------------------------------------------------
+  // Each curve has three draggable levers, one per slider:
+  //   careful   at the first libinput point, height = careful speed      (always on the curve)
+  //   fast      at the last point (x = 8),   height = fast speed         (always on the curve)
+  //   speeds up halfway between them,        height = the smooth formula there,
+  //             slow + (fast - slow) * 0.5 ^ ramp. The real curve is straight segments between
+  //             libinput's points, so it can pass a little above/below this lever.
+  function knotCount() { return Math.max(4, Math.min(32, Math.round(Number(root.st.curve_points) || 4))) }
+  readonly property var leverNames: ["slow", "ramp", "fast"]
+  function leverX(lever) {
+    var step = 8 / knotCount()
+    return lever === "slow" ? step : lever === "fast" ? 8 : (step + 8) / 2
+  }
+  function leverValue(which, lever, change) {
+    var pre = which === "pointer" ? "pointer_" : "scroll_"
+    function pv(k) { return change && change[pre + k] !== undefined ? change[pre + k] : Number(root.val(pre + k)) }
+    var mul = which === "scroll" ? Number(root.val("scroll_speed")) : 1
+    var slow = pv("slow"), fast = pv("fast")
+    if (lever === "slow") return slow * mul
+    if (lever === "fast") return fast * mul
+    return (slow + (fast - slow) * Math.pow(0.5, pv("ramp"))) * mul
   }
   readonly property var sliderLimits: ({
     pointer_slow: [0.1, 1.0], pointer_fast: [0.5, 4.0], pointer_ramp: [0.6, 3.0],
     scroll_slow: [0.1, 2.0], scroll_fast: [0.3, 5.0], scroll_ramp: [0.6, 3.0] })
-  function solveDrag(which, x, v) {
+  // slider change that puts `lever` at chart height v
+  function solveDrag(which, lever, v) {
     var pre = which === "pointer" ? "pointer_" : "scroll_"
     if (which === "scroll") v = v / Math.max(0.01, root.val("scroll_speed"))
     function put(key, val) {
@@ -192,13 +206,37 @@ Panel {
       var o = {}; o[key] = Math.round(Math.max(r[0], Math.min(r[1], val)) * 100) / 100
       return o
     }
-    if (x <= 1.0001) return put(pre + "slow", v)
-    if (x >= 7.9999) return put(pre + "fast", v)
+    if (lever === "slow") return put(pre + "slow", v)
+    if (lever === "fast") return put(pre + "fast", v)
     var slow = Number(root.val(pre + "slow")), fast = Number(root.val(pre + "fast"))
     if (Math.abs(fast - slow) < 0.005) return ({})
-    var t = (x - 1) / 7
     var ratio = Math.max(0.002, Math.min(0.998, (v - slow) / (fast - slow)))
-    return put(pre + "ramp", Math.log(ratio) / Math.log(t))
+    return put(pre + "ramp", Math.log(ratio) / Math.log(0.5))
+  }
+  // Would the curve, with `change` applied, stay inside the chart (0 .. ymax) everywhere, including the
+  // extrapolated part out to a hard flick?
+  function curveFits(which, change, ymax) {
+    var pre = which === "pointer" ? "pointer_" : "scroll_"
+    function pv(k) { return change[pre + k] !== undefined ? change[pre + k] : Number(root.val(pre + k)) }
+    var mul = which === "scroll" ? Number(root.val("scroll_speed")) : 1
+    for (var i = 1; i <= 64; i++) {
+      var yv = root.gainAt(pv("slow"), pv("fast"), pv("ramp"), i / 4) * mul
+      if (!(yv >= 0.02) || yv > ymax + 1e-6) return false
+    }
+    return true
+  }
+  // The change for dragging `lever` towards height `target`, stopping at the last value that keeps
+  // the slider in range and the whole curve inside the chart.
+  function constrainedDrag(which, lever, current, target, ymax) {
+    var ch = solveDrag(which, lever, target)
+    if (curveFits(which, ch, ymax)) return ch
+    var lo = current, hi = target, best = ({})         // lo fits: it is where the lever is now
+    for (var it = 0; it < 24; it++) {
+      var mid = (lo + hi) / 2
+      var c = solveDrag(which, lever, mid)
+      if (curveFits(which, c, ymax)) { lo = mid; best = c } else hi = mid
+    }
+    return best
   }
 
   // ---- bar button ------------------------------------------------------------------------
@@ -399,8 +437,8 @@ Panel {
                 readonly property real gh: height - padB - padT
                 readonly property real xmax: 16
                 property real ymax: 1.5            // frozen while a dot is being dragged
-                property string hotWhich: ""       // dot under the pointer / being dragged
-                property int hotIndex: -1
+                property string hotWhich: ""       // lever under the pointer / being dragged
+                property string hotLever: ""
                 property bool dragging: false
 
                 function px(x) { return padL + gw * x / xmax }
@@ -412,13 +450,14 @@ Panel {
                   return Math.max(1.5, Math.ceil(m * 2) / 2)
                 }
                 function gainOf(which, x) { return which === "pointer" ? root.pointerGain(x) : root.scrollGain(x) }
-                function dotAt(mx, my) {
-                  var xs = root.knotXs(), best = null, bestD = 13
+                function leverAt(mx, my) {
+                  var best = null, bestD = 13
                   var order = ["scroll", "pointer"]          // pointer wins ties (drawn on top)
                   for (var o = 0; o < order.length; o++)
-                    for (var k = 0; k < xs.length; k++) {
-                      var d = Math.hypot(px(xs[k]) - mx, py(gainOf(order[o], xs[k])) - my)
-                      if (d <= bestD) { bestD = d; best = { which: order[o], index: k } }
+                    for (var l = 0; l < root.leverNames.length; l++) {
+                      var lv = root.leverNames[l]
+                      var d = Math.hypot(px(root.leverX(lv)) - mx, py(root.leverValue(order[o], lv)) - my)
+                      if (d <= bestD) { bestD = d; best = { which: order[o], lever: lv } }
                     }
                   return best
                 }
@@ -456,34 +495,40 @@ Panel {
                     }
                     ctx.stroke()
                   }
-                  // the points libinput receives, as draggable dots
-                  function dots(which, color) {
-                    var xs = root.knotXs()
-                    for (var k = 0; k < xs.length; k++) {
-                      var hot = hotWhich === which && hotIndex === k
-                      var r = hot ? 5.5 : 3.5
-                      ctx.beginPath(); ctx.arc(px(xs[k]), py(gainOf(which, xs[k])), r + 1.5, 0, 2 * Math.PI)
+                  // levers: careful + fast sit on the curve; speeds up shows the smooth formula's bend
+                  function levers(which, color) {
+                    for (var l = 0; l < root.leverNames.length; l++) {
+                      var lv = root.leverNames[l]
+                      var hot = hotWhich === which && hotLever === lv
+                      var cx = px(root.leverX(lv)), cy = py(root.leverValue(which, lv))
+                      var r = hot ? 6.5 : 5
+                      ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI)
                       ctx.fillStyle = bg; ctx.fill()
-                      ctx.beginPath(); ctx.arc(px(xs[k]), py(gainOf(which, xs[k])), r, 0, 2 * Math.PI)
-                      ctx.fillStyle = color; ctx.fill()
+                      ctx.lineWidth = 2; ctx.strokeStyle = color; ctx.stroke()
+                      if (lv === "ramp") {          // a bar across the ring marks the bend lever
+                        ctx.beginPath(); ctx.moveTo(cx - r + 2, cy); ctx.lineTo(cx + r - 2, cy); ctx.stroke()
+                      } else {
+                        ctx.beginPath(); ctx.arc(cx, cy, r - 3, 0, 2 * Math.PI); ctx.fillStyle = color; ctx.fill()
+                      }
                     }
                   }
                   curve("scroll", accent)
                   curve("pointer", fg)
-                  dots("scroll", accent)
-                  dots("pointer", fg)
-                  // value of the hot dot
-                  if (hotIndex >= 0 && hotWhich !== "") {
-                    var hx = root.knotXs()[hotIndex]
-                    if (hx !== undefined) {
-                      var hv = gainOf(hotWhich, hx)
-                      var label = hv.toFixed(2) + "×"
-                      var lw = ctx.measureText(label).width
-                      var lx = Math.min(w - 4 - lw, Math.max(padL, px(hx) - lw / 2))
-                      var ly = py(hv) - 10 < padT + 8 ? py(hv) + 18 : py(hv) - 10
-                      ctx.fillStyle = hotWhich === "pointer" ? fg : accent
-                      ctx.fillText(label, lx, ly)
-                    }
+                  levers("scroll", accent)
+                  levers("pointer", fg)
+                  // name + value of the hot lever
+                  if (hotLever !== "" && hotWhich !== "") {
+                    var pre = hotWhich === "pointer" ? "pointer_" : "scroll_"
+                    var hv = root.leverValue(hotWhich, hotLever)
+                    var label = hotLever === "slow" ? "careful " + hv.toFixed(2) + "×"
+                              : hotLever === "fast" ? "fast " + hv.toFixed(2) + "×"
+                              : "speeds up " + Number(root.val(pre + "ramp")).toFixed(2)
+                    var lw = ctx.measureText(label).width
+                    var hxp = px(root.leverX(hotLever))
+                    var lx = Math.min(w - 4 - lw, Math.max(padL, hxp - lw / 2))
+                    var ly = py(hv) - 11 < padT + 8 ? py(hv) + 19 : py(hv) - 11
+                    ctx.fillStyle = hotWhich === "pointer" ? fg : accent
+                    ctx.fillText(label, lx, ly)
                   }
                 }
                 Connections {
@@ -492,35 +537,36 @@ Panel {
                   function onDraftChanged() { graph.requestPaint() }
                 }
                 onWidthChanged: requestPaint()
-                onHotIndexChanged: requestPaint()
+                onHotLeverChanged: requestPaint()
                 onHotWhichChanged: requestPaint()
                 Component.onCompleted: requestPaint()
               }
 
               MouseArea {
-                id: dotMouse
+                id: leverMouse
                 anchors.fill: graph
                 hoverEnabled: true
                 preventStealing: true
                 acceptedButtons: Qt.LeftButton
-                cursorShape: (graph.hotIndex >= 0) ? Qt.SizeVerCursor : Qt.ArrowCursor
+                cursorShape: graph.hotLever !== "" ? Qt.SizeVerCursor : Qt.ArrowCursor
                 property var pendingChange: ({})
 
                 function hover(mx, my) {
-                  var d = graph.dotAt(mx, my)
-                  graph.hotWhich = d ? d.which : ""
-                  graph.hotIndex = d ? d.index : -1
+                  var l = graph.leverAt(mx, my)
+                  graph.hotWhich = l ? l.which : ""
+                  graph.hotLever = l ? l.lever : ""
                 }
                 onPositionChanged: function(mouse) {
                   if (!graph.dragging) { hover(mouse.x, mouse.y); return }
-                  var x = root.knotXs()[graph.hotIndex]
-                  var change = root.solveDrag(graph.hotWhich, x, Math.max(0.02, graph.valueAt(mouse.y)))
+                  var target = Math.max(0.02, Math.min(graph.ymax, graph.valueAt(mouse.y)))
+                  var current = root.leverValue(graph.hotWhich, graph.hotLever)
+                  var change = root.constrainedDrag(graph.hotWhich, graph.hotLever, current, target, graph.ymax)
                   for (var k in change) root.preview(k, change[k])
                   pendingChange = Object.assign({}, pendingChange, change)
                 }
                 onPressed: function(mouse) {
                   hover(mouse.x, mouse.y)
-                  if (graph.hotIndex < 0) { mouse.accepted = false; return }
+                  if (graph.hotLever === "") { mouse.accepted = false; return }
                   pendingChange = ({})
                   graph.dragging = true
                 }
@@ -532,7 +578,7 @@ Panel {
                   hover(mouse.x, mouse.y)
                   graph.requestPaint()
                 }
-                onExited: if (!graph.dragging) { graph.hotWhich = ""; graph.hotIndex = -1 }
+                onExited: if (!graph.dragging) { graph.hotWhich = ""; graph.hotLever = "" }
               }
             }
             Row {
@@ -540,7 +586,7 @@ Panel {
               spacing: Style.space(14)
               Text { text: "━ pointer"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
               Text { text: "━ scroll"; color: Color.accent; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
-              Text { text: "drag a dot to reshape"; color: Qt.darker(root.bar.foreground, 1.6); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
+              Text { text: "drag a lever to reshape"; color: Qt.darker(root.bar.foreground, 1.6); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
             }
 
             PanelSeparator { width: parent.width }

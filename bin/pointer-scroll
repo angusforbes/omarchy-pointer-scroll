@@ -19,9 +19,9 @@ Usage:
 Every change reloads Hyprland and is rolled back automatically if `hyprctl configerrors` complains.
 
 The curves use libinput's "custom" acceleration profile. Finger speed x is in units/ms (1 ~ 25 mm/s);
-the curve spans x = 0..8 with `curve_points` points (default 8, i.e. step 1; 4..32 allowed):
-  amplification(x) = slow                                         for x <= 1
-                   = slow + (fast - slow) * ((x - 1) / 7) ** ramp  for 1 < x <= 8
+the curve spans x = 0..8 with n = `curve_points` points (default 4; 4..32 allowed), step s = 8/n:
+  amplification(x) = slow                                             for x <= s  (the first point)
+                   = slow + (fast - slow) * ((x - s) / (8 - s)) ** ramp  for s < x <= 8 (last point)
   output speed(x)  = x * amplification(x)     (libinput draws straight lines between the points and
                                                extrapolates linearly beyond x = 8)
 More points = a smoother curve of the same shape: `pointer-scroll set curve_points 16`, or edit
@@ -57,7 +57,7 @@ DEFAULTS = {
     "scroll_speed": 0.4,      # overall touchpad scroll multiplier (input:touchpad:scroll_factor; Omarchy default 0.4)
     "terminal_scroll": 1.5,   # touchpad scroll multiplier inside Alacritty/kitty/foot (Omarchy default 1.5)
     "sensitivity": 0.0,       # plain pointer speed (-1..1); used for the touchpad when accel is off, and for mice
-    "curve_points": 8,        # points libinput gets per curve (4..32); more = smoother, same shape. Config-file only.
+    "curve_points": 4,        # points libinput gets per curve (4..32); more = smoother. Config-file only.
 }
 LIMITS = {
     "pointer_slow": (0.05, 1.5), "pointer_fast": (0.3, 5.0), "pointer_ramp": (0.5, 3.0),
@@ -102,17 +102,18 @@ def installed():
 
 
 # ---------------------------------------------------------------------------------------- curves
-def gain(slow, fast, ramp, x):
-    """Amplification at finger speed x (units/ms): slow up to x = 1, then eases to fast at x = 8."""
-    if x <= 1:
+def gain(slow, fast, ramp, x, x1):
+    """Amplification at finger speed x (units/ms): `slow` up to the first point x1, easing to `fast` at SPAN."""
+    if x <= x1:
         return slow
-    return slow + (fast - slow) * ((x - 1) / (SPAN - 1)) ** ramp
+    return slow + (fast - slow) * ((x - x1) / (SPAN - x1)) ** ramp
 
 
-def curve(slow, fast, ramp, n=8):
-    """libinput custom points: output speeds at x = 0, step, 2*step, ..., SPAN (n points after 0)."""
+def curve(slow, fast, ramp, n=4):
+    """libinput custom points: output speeds at x = 0, step, 2*step, ..., SPAN (n points after 0).
+    The first point is the careful speed and the last is the fast speed, whatever n is."""
     step = SPAN / n
-    return step, [0.0] + [round(k * step * gain(slow, fast, ramp, k * step), 3) for k in range(1, n + 1)]
+    return step, [0.0] + [round(k * step * gain(slow, fast, ramp, k * step, step), 3) for k in range(1, n + 1)]
 
 
 def fmt(v):
