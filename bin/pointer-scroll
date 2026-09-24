@@ -18,10 +18,14 @@ Usage:
 
 Every change reloads Hyprland and is rolled back automatically if `hyprctl configerrors` complains.
 
-The curves use libinput's "custom" acceleration profile (step = 1 unit/ms, roughly 25 mm/s of finger
-speed). For x = 1..8:
-  amplification(x) = slow + (fast - slow) * ((x - 1) / 7) ** ramp
-  output speed(x)  = x * amplification(x)          (libinput extrapolates linearly beyond x = 8)
+The curves use libinput's "custom" acceleration profile. Finger speed x is in units/ms (1 ~ 25 mm/s);
+the curve spans x = 0..8 with `curve_points` points (default 8, i.e. step 1; 4..32 allowed):
+  amplification(x) = slow                                         for x <= 1
+                   = slow + (fast - slow) * ((x - 1) / 7) ** ramp  for 1 < x <= 8
+  output speed(x)  = x * amplification(x)     (libinput draws straight lines between the points and
+                                               extrapolates linearly beyond x = 8)
+More points = a smoother curve of the same shape: `pointer-scroll set curve_points 16`, or edit
+pointer_scroll.json and run `pointer-scroll apply`.
 slow = amplification when moving carefully (~25 mm/s), fast = on a quick flick (~200 mm/s),
 ramp > 1 keeps the pointer precise for longer before it speeds up.
 """
@@ -53,12 +57,15 @@ DEFAULTS = {
     "scroll_speed": 0.4,      # overall touchpad scroll multiplier (input:touchpad:scroll_factor; Omarchy default 0.4)
     "terminal_scroll": 1.5,   # touchpad scroll multiplier inside Alacritty/kitty/foot (Omarchy default 1.5)
     "sensitivity": 0.0,       # plain pointer speed (-1..1); used for the touchpad when accel is off, and for mice
+    "curve_points": 8,        # points libinput gets per curve (4..32); more = smoother, same shape. Config-file only.
 }
 LIMITS = {
     "pointer_slow": (0.05, 1.5), "pointer_fast": (0.3, 5.0), "pointer_ramp": (0.5, 3.0),
     "scroll_slow": (0.05, 3.0), "scroll_fast": (0.1, 6.0), "scroll_ramp": (0.5, 3.0),
     "scroll_speed": (0.05, 3.0), "terminal_scroll": (0.05, 5.0), "sensitivity": (-1.0, 1.0),
+    "curve_points": (4, 32),
 }
+SPAN = 8.0   # the curve covers finger speeds 0..8 units/ms (~0..200 mm/s); libinput extrapolates beyond
 
 
 # ---------------------------------------------------------------------------------------- state
@@ -69,6 +76,10 @@ def load():
             s.update({k: v for k, v in json.load(f).items() if k in DEFAULTS})
     except (OSError, ValueError):
         pass
+    try:
+        s["curve_points"] = parse_value("curve_points", s["curve_points"])   # tolerate hand edits
+    except (TypeError, ValueError):
+        s["curve_points"] = DEFAULTS["curve_points"]
     return s
 
 
@@ -91,13 +102,17 @@ def installed():
 
 
 # ---------------------------------------------------------------------------------------- curves
+def gain(slow, fast, ramp, x):
+    """Amplification at finger speed x (units/ms): slow up to x = 1, then eases to fast at x = 8."""
+    if x <= 1:
+        return slow
+    return slow + (fast - slow) * ((x - 1) / (SPAN - 1)) ** ramp
+
+
 def curve(slow, fast, ramp, n=8):
-    """Output speeds at x = 0..n (libinput custom points)."""
-    pts = [0.0]
-    for x in range(1, n + 1):
-        t = (x - 1) / (n - 1)
-        pts.append(round(x * (slow + (fast - slow) * t ** ramp), 3))
-    return pts
+    """libinput custom points: output speeds at x = 0, step, 2*step, ..., SPAN (n points after 0)."""
+    step = SPAN / n
+    return step, [0.0] + [round(k * step * gain(slow, fast, ramp, k * step), 3) for k in range(1, n + 1)]
 
 
 def fmt(v):
@@ -105,12 +120,13 @@ def fmt(v):
 
 
 def derived(s):
-    p = curve(s["pointer_slow"], s["pointer_fast"], s["pointer_ramp"])
-    c = curve(s["scroll_slow"], s["scroll_fast"], s["scroll_ramp"])
+    n = int(s["curve_points"])
+    step, p = curve(s["pointer_slow"], s["pointer_fast"], s["pointer_ramp"], n)
+    _, c = curve(s["scroll_slow"], s["scroll_fast"], s["scroll_ramp"], n)
     return {
-        "pointer_points": p, "scroll_points": c,
-        "pointer_profile": "custom 1 " + " ".join(fmt(v) for v in p),
-        "scroll_profile": "1 " + " ".join(fmt(v) for v in c),
+        "curve_step": step, "pointer_points": p, "scroll_points": c,
+        "pointer_profile": f"custom {fmt(step)} " + " ".join(fmt(v) for v in p),
+        "scroll_profile": f"{fmt(step)} " + " ".join(fmt(v) for v in c),
     }
 
 
@@ -264,6 +280,8 @@ def parse_value(key, raw):
     if key == "accel":
         return str(raw).lower() in ("1", "true", "on", "yes")
     lo, hi = LIMITS[key]
+    if key == "curve_points":
+        return int(max(lo, min(hi, round(float(raw)))))
     return round(max(lo, min(hi, float(raw))), 3)
 
 

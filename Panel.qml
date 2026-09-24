@@ -26,7 +26,7 @@ Panel {
   // ---- state ---------------------------------------------------------------------------
   property var st: ({ accel: true, pointer_slow: 0.35, pointer_fast: 1.6, pointer_ramp: 1.5,
                       scroll_slow: 0.6, scroll_fast: 1.6, scroll_ramp: 1.0, scroll_speed: 0.4,
-                      terminal_scroll: 1.5, sensitivity: 0.0, installed: true, touchpads: [] })
+                      terminal_scroll: 1.5, sensitivity: 0.0, curve_points: 8, installed: true, touchpads: [] })
   // backend script shipped inside the plugin folder
   readonly property string cli: String(Qt.resolvedUrl("bin/pointer-scroll")).replace(/^file:\/\//, "")
   // set up = input.lua loads the generated config (the panel offers a one-click "Set up" otherwise)
@@ -149,16 +149,19 @@ Panel {
   Component.onCompleted: { refresh(); setFlag(false) }
 
   // ---- curve maths (mirrors bin/pointer-scroll) ------------------------------------------------
-  // amplification at finger speed x (units/ms, 1 ~ 25 mm/s)
+  // amplification at finger speed x (units/ms, 1 ~ 25 mm/s), exactly as libinput computes it from the
+  // points bin/pointer-scroll generates: `curve_points` knots spread over x = 0..8, straight lines
+  // (in output speed) between them, linear extrapolation beyond x = 8.
   function gainAt(slow, fast, ramp, x) {
-    function y(i) { var t = (i - 1) / 7; return i * (slow + (fast - slow) * Math.pow(t, ramp)) }
-    if (x <= 1) return slow
-    if (x <= 8) {
-      var i0 = Math.floor(x), f = x - i0
-      var yy = i0 >= 8 ? y(8) : y(i0) * (1 - f) + y(i0 + 1) * f
-      return yy / x
-    }
-    return (y(8) + (x - 8) * (y(8) - y(7))) / x
+    var n = Math.max(4, Math.min(32, Math.round(Number(root.st.curve_points) || 8)))
+    var step = 8 / n
+    function g(v) { return v <= 1 ? slow : slow + (fast - slow) * Math.pow((v - 1) / 7, ramp) }
+    function yk(k) { return k * step * g(k * step) }          // output speed at knot k
+    var kf = x / step
+    var y
+    if (kf >= n) y = yk(n) + (kf - n) * (yk(n) - yk(n - 1))
+    else { var i = Math.floor(kf), f = kf - i; y = yk(i) * (1 - f) + yk(i + 1) * f }
+    return y / x
   }
   function pointerGain(x) {
     return root.val("accel") ? gainAt(root.val("pointer_slow"), root.val("pointer_fast"), root.val("pointer_ramp"), x) : NaN
