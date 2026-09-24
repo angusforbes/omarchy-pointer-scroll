@@ -205,8 +205,8 @@ Panel {
     return (slow + (fast - slow) * Math.pow(0.5, pv("ramp"))) * mul
   }
   readonly property var sliderLimits: ({
-    pointer_slow: [0.1, 1.0], pointer_fast: [0.5, 4.0], pointer_ramp: [0.6, 3.0],
-    scroll_slow: [0.1, 2.0], scroll_fast: [0.3, 5.0], scroll_ramp: [0.6, 3.0] })
+    pointer_slow: [0.1, 1.0], pointer_fast: [0.5, 4.0], pointer_ramp: [0.15, 5.0],
+    scroll_slow: [0.1, 2.0], scroll_fast: [0.3, 5.0], scroll_ramp: [0.15, 5.0] })
   // slider change that puts `lever` at chart height v
   function solveDrag(which, lever, v) {
     var pre = which === "pointer" ? "pointer_" : "scroll_"
@@ -223,29 +223,22 @@ Panel {
     var ratio = Math.max(0.002, Math.min(0.998, (v - slow) / (fast - slow)))
     return put(pre + "ramp", Math.log(ratio) / Math.log(0.5))
   }
-  // Would the curve, with `change` applied, stay inside the chart (0 .. ymax) everywhere, including the
-  // extrapolated part out to a hard flick?
-  function curveFits(which, change, ymax) {
+  // Lever drags only stop at real limits: each slider's range (applied in solveDrag) and fast never
+  // below careful. The curve's far end may rise above the chart while dragging; it is clipped there and
+  // the chart rescales when you let go.
+  function dragAllowed(which, change) {
     var pre = which === "pointer" ? "pointer_" : "scroll_"
     function pv(k) { return change[pre + k] !== undefined ? change[pre + k] : Number(root.val(pre + k)) }
-    var mul = which === "scroll" ? Number(root.val("scroll_speed")) : 1
-    if (pv("fast") < pv("slow")) return false
-    for (var i = 1; i <= 64; i++) {
-      var yv = root.gainAt(pv("slow"), pv("fast"), pv("ramp"), i / 4) * mul
-      if (!(yv >= 0.02) || yv > ymax + 1e-6) return false
-    }
-    return true
+    return pv("fast") >= pv("slow")
   }
-  // The change for dragging `lever` towards height `target`, stopping at the last value that keeps
-  // the slider in range and the whole curve inside the chart.
-  function constrainedDrag(which, lever, current, target, ymax) {
+  function constrainedDrag(which, lever, current, target) {
     var ch = solveDrag(which, lever, target)
-    if (curveFits(which, ch, ymax)) return ch
-    var lo = current, hi = target, best = ({})         // lo fits: it is where the lever is now
+    if (dragAllowed(which, ch)) return ch
+    var lo = current, hi = target, best = ({})         // lo is allowed: it is where the lever is now
     for (var it = 0; it < 24; it++) {
       var mid = (lo + hi) / 2
       var c = solveDrag(which, lever, mid)
-      if (curveFits(which, c, ymax)) { lo = mid; best = c } else hi = mid
+      if (dragAllowed(which, c)) { lo = mid; best = c } else hi = mid
     }
     return best
   }
@@ -529,8 +522,11 @@ Panel {
                       }
                     }
                   }
+                  ctx.save()
+                  ctx.beginPath(); ctx.rect(padL, 0, w - 4 - padL, py(0)); ctx.clip()
                   curve("scroll", accent)
                   curve("pointer", fg)
+                  ctx.restore()
                   levers("scroll", accent)
                   levers("pointer", fg)
                   // name + value of the hot lever
@@ -577,7 +573,7 @@ Panel {
                   if (!graph.dragging) { hover(mouse.x, mouse.y); return }
                   var target = Math.max(0.02, Math.min(graph.ymax, graph.valueAt(mouse.y)))
                   var current = root.leverValue(graph.hotWhich, graph.hotLever)
-                  var change = root.constrainedDrag(graph.hotWhich, graph.hotLever, current, target, graph.ymax)
+                  var change = root.constrainedDrag(graph.hotWhich, graph.hotLever, current, target)
                   for (var k in change) root.preview(k, change[k])
                   pendingChange = Object.assign({}, pendingChange, change)
                 }
@@ -612,14 +608,14 @@ Panel {
             PanelSectionHeader { width: parent.width; text: (root.st.touchpads && root.st.touchpads.length === 0) ? "POINTER (ALL DEVICES)" : "POINTER (TOUCHPAD)"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily; visible: root.val("accel") }
             TuneRow { key: "pointer_slow"; label: "Careful speed"; hint: "Selecting text, small moves"; minimum: 0.1; maximum: 1.0; visible: root.val("accel") }
             TuneRow { key: "pointer_fast"; label: "Fast speed"; hint: "Flicking across the screen"; minimum: 0.5; maximum: 4.0; visible: root.val("accel") }
-            TuneRow { key: "pointer_ramp"; label: "Speeds up"; hint: "Left = sooner, right = stays precise longer"; minimum: 0.6; maximum: 3.0; suffix: ""; visible: root.val("accel") }
+            TuneRow { key: "pointer_ramp"; label: "Speeds up"; hint: "Left = sooner, right = stays precise longer"; minimum: 0.15; maximum: 5.0; suffix: ""; visible: root.val("accel") }
 
             // ---------- Scroll ----------
             PanelSectionHeader { width: parent.width; text: "TWO-FINGER SCROLL"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
             TuneRow { key: "scroll_speed"; label: "Overall scroll speed"; hint: "Scales everything below"; minimum: 0.1; maximum: 2.0 }
             TuneRow { key: "scroll_slow"; label: "Careful scroll"; hint: "Slow two-finger drag"; minimum: 0.1; maximum: 2.0; visible: root.val("accel") }
             TuneRow { key: "scroll_fast"; label: "Fast scroll"; hint: "Quick swipe"; minimum: 0.3; maximum: 5.0; visible: root.val("accel") }
-            TuneRow { key: "scroll_ramp"; label: "Scroll speeds up"; hint: "Left = sooner, right = stays fine longer"; minimum: 0.6; maximum: 3.0; suffix: ""; visible: root.val("accel") }
+            TuneRow { key: "scroll_ramp"; label: "Scroll speeds up"; hint: "Left = sooner, right = stays fine longer"; minimum: 0.15; maximum: 5.0; suffix: ""; visible: root.val("accel") }
             TuneRow { key: "terminal_scroll"; label: "Terminal scroll"; hint: "Replaces overall scroll speed in Alacritty, kitty and foot"; minimum: 0.1; maximum: 4.0 }
 
             // ---------- Other ----------
