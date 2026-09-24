@@ -34,6 +34,7 @@ Panel {
   property var draft: ({})          // values being dragged, not yet applied
   property string lastError: ""
   property bool busy: false
+  property bool sliderActive: false    // a slider is being dragged: the scroll area must not steal it
   property bool confirmReset: false   // Reset asks "are you sure?" first
 
   function val(key) { return draft[key] !== undefined ? draft[key] : st[key] }
@@ -327,7 +328,7 @@ Panel {
         // Only scroll when the panel is taller than the screen. A scrollable Flickable takes over a
         // slider drag that wobbles vertically: the slider never sees the release, so its value is
         // shown but never applied.
-        interactive: contentHeight > height + 1
+        interactive: contentHeight > height + 1 && !root.sliderActive
 
         Column {
           id: column
@@ -730,6 +731,7 @@ Panel {
       maximum: row.maximum
       step: (row.maximum - row.minimum) / 40
       value: Number(root.val(row.key))
+      onDraggingChanged: root.sliderActive = dragging
       onMoved: function(v) { root.preview(row.key, Math.round(v * 100) / 100) }
       onReleased: function(v) { root.setKey(row.key, Math.round(v * 100) / 100); liveValue = Number(root.val(row.key)) }
       // If a drag was ever interrupted (no release), don't keep showing an unapplied value.
