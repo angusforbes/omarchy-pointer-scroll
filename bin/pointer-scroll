@@ -309,6 +309,12 @@ def main(argv):
             if k not in DEFAULTS:
                 raise SystemExit(f"unknown key {k!r}; known: {', '.join(DEFAULTS)}")
             s[k] = parse_value(k, v)
+            # fast may not drop below careful (the curve would slope downwards)
+            for w in ("pointer", "scroll"):
+                if k == f"{w}_slow":
+                    s[k] = min(s[k], s[f"{w}_fast"])
+                elif k == f"{w}_fast":
+                    s[k] = max(s[k], s[f"{w}_slow"])
     elif cmd == "reset":
         s = dict(DEFAULTS)
     elif cmd == "install":

@@ -37,13 +37,22 @@ Panel {
   property bool confirmReset: false   // Reset asks "are you sure?" first
 
   function val(key) { return draft[key] !== undefined ? draft[key] : st[key] }
-  function preview(key, v) { var d = Object.assign({}, draft); d[key] = v; draft = d }
+  function preview(key, v) { v = clampPair(key, v); var d = Object.assign({}, draft); d[key] = v; draft = d }
 
   // ---- plumbing ------------------------------------------------------------------------
   function refresh() { if (!getProc.running) getProc.running = true }
 
   property var pending: ({})        // key -> value waiting to be applied (latest wins)
+  // Fast speed may not drop below careful speed (the curve would slope downwards): whichever of the
+  // two is being changed stops at the other one.
+  function clampPair(key, v) {
+    var m = /^(pointer|scroll)_(slow|fast)$/.exec(key)
+    if (!m) return v
+    var other = Number(root.val(m[1] + (m[2] === "slow" ? "_fast" : "_slow")))
+    return m[2] === "slow" ? Math.min(v, other) : Math.max(v, other)
+  }
   function setKey(key, v) {
+    v = clampPair(key, v)
     var p = Object.assign({}, pending); p[key] = v; pending = p
     preview(key, v)
     pump()
@@ -219,6 +228,7 @@ Panel {
     var pre = which === "pointer" ? "pointer_" : "scroll_"
     function pv(k) { return change[pre + k] !== undefined ? change[pre + k] : Number(root.val(pre + k)) }
     var mul = which === "scroll" ? Number(root.val("scroll_speed")) : 1
+    if (pv("fast") < pv("slow")) return false
     for (var i = 1; i <= 64; i++) {
       var yv = root.gainAt(pv("slow"), pv("fast"), pv("ramp"), i / 4) * mul
       if (!(yv >= 0.02) || yv > ymax + 1e-6) return false
@@ -308,10 +318,16 @@ Panel {
       onCloseRequested: root.close()
 
       Flickable {
+        id: scroller
         anchors.fill: parent
         contentHeight: column.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        // Only scroll when the panel is taller than the screen. A scrollable Flickable takes over a
+        // slider drag that wobbles vertically: the slider never sees the release, so its value is
+        // shown but never applied.
+        interactive: contentHeight > height + 1
 
         Column {
           id: column
@@ -715,7 +731,13 @@ Panel {
       step: (row.maximum - row.minimum) / 40
       value: Number(root.val(row.key))
       onMoved: function(v) { root.preview(row.key, Math.round(v * 100) / 100) }
-      onReleased: function(v) { root.setKey(row.key, Math.round(v * 100) / 100) }
+      onReleased: function(v) { root.setKey(row.key, Math.round(v * 100) / 100); liveValue = Number(root.val(row.key)) }
+      // If a drag was ever interrupted (no release), don't keep showing an unapplied value.
+      Connections {
+        target: root
+        function onOpenedChanged() { slider.dragging = false; slider.liveValue = slider.value }
+        function onStChanged() { if (!slider.dragging) slider.liveValue = slider.value }
+      }
     }
     Text {
       text: row.hint
