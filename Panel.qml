@@ -507,15 +507,6 @@ Panel {
                     }
                     ctx.stroke()
                   }
-                  // the points libinput receives (not draggable): at each one the curve value is exact
-                  function points(which, color) {
-                    var n = root.knotCount(), step = 8 / n
-                    ctx.fillStyle = color
-                    for (var k = 1; k <= n; k++) {
-                      var kx = k * step
-                      ctx.beginPath(); ctx.arc(px(kx), py(gainOf(which, kx)), n > 16 ? 1.8 : 2.4, 0, 2 * Math.PI); ctx.fill()
-                    }
-                  }
                   // levers: careful + fast sit on the curve; speeds up shows the smooth formula's bend
                   function levers(which, color) {
                     for (var l = 0; l < root.leverNames.length; l++) {
@@ -537,8 +528,6 @@ Panel {
                   ctx.beginPath(); ctx.rect(padL, 0, w - 4 - padL, py(0)); ctx.clip()
                   curve("scroll", accent)
                   curve("pointer", fg)
-                  points("scroll", accent)
-                  points("pointer", fg)
                   ctx.restore()
                   levers("scroll", accent)
                   levers("pointer", fg)
