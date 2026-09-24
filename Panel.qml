@@ -26,7 +26,7 @@ Panel {
   // ---- state ---------------------------------------------------------------------------
   property var st: ({ accel: true, pointer_slow: 0.35, pointer_fast: 1.6, pointer_ramp: 1.5,
                       scroll_slow: 0.6, scroll_fast: 1.6, scroll_ramp: 1.0, scroll_speed: 0.4,
-                      terminal_scroll: 1.5, sensitivity: 0.0, curve_points: 4, installed: true, touchpads: [] })
+                      terminal_scroll: 1.5, sensitivity: 0.0, curve_points: 16, installed: true, touchpads: [] })
   // backend script shipped inside the plugin folder
   readonly property string cli: String(Qt.resolvedUrl("bin/pointer-scroll")).replace(/^file:\/\//, "")
   // set up = input.lua loads the generated config (the panel offers a one-click "Set up" otherwise)
@@ -189,7 +189,7 @@ Panel {
   //   speeds up halfway between them,        height = the smooth formula there,
   //             slow + (fast - slow) * 0.5 ^ ramp. The real curve is straight segments between
   //             libinput's points, so it can pass a little above/below this lever.
-  function knotCount() { return Math.max(4, Math.min(32, Math.round(Number(root.st.curve_points) || 4))) }
+  function knotCount() { return Math.max(4, Math.min(32, Math.round(Number(root.st.curve_points) || 16))) }
   readonly property var leverNames: ["slow", "ramp", "fast"]
   function leverX(lever) {
     var step = 8 / knotCount()

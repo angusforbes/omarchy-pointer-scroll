@@ -19,7 +19,7 @@ Usage:
 Every change reloads Hyprland and is rolled back automatically if `hyprctl configerrors` complains.
 
 The curves use libinput's "custom" acceleration profile. Finger speed x is in units/ms (1 ~ 25 mm/s);
-the curve spans x = 0..8 with n = `curve_points` points (default 4; 4..32 allowed), step s = 8/n:
+the curve spans x = 0..8 with n = `curve_points` points (default 16; 4..32 allowed), step s = 8/n:
   amplification(x) = slow                                             for x <= s  (the first point)
                    = slow + (fast - slow) * ((x - s) / (8 - s)) ** ramp  for s < x <= 8 (last point)
   output speed(x)  = x * amplification(x)     (libinput draws straight lines between the points and
@@ -57,7 +57,7 @@ DEFAULTS = {
     "scroll_speed": 0.4,      # overall touchpad scroll multiplier (input:touchpad:scroll_factor; Omarchy default 0.4)
     "terminal_scroll": 1.5,   # touchpad scroll multiplier inside Alacritty/kitty/foot (Omarchy default 1.5)
     "sensitivity": 0.0,       # plain pointer speed (-1..1); used for the touchpad when accel is off, and for mice
-    "curve_points": 4,        # points libinput gets per curve (4..32); more = smoother. Config-file only.
+    "curve_points": 16,       # points libinput gets per curve (4..32); more = smoother. Config-file only.
 }
 LIMITS = {
     "pointer_slow": (0.05, 1.5), "pointer_fast": (0.3, 5.0), "pointer_ramp": (0.5, 3.0),
