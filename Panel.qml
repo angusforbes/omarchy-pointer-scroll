@@ -333,7 +333,7 @@ Panel {
         Column {
           id: column
           width: parent.width
-          spacing: Style.space(10)
+          spacing: Style.space(6)
 
           // ---------- Hero ----------
           Item {
@@ -396,7 +396,7 @@ Panel {
           // ---------- First-run setup ----------
           Column {
             width: parent.width
-            spacing: Style.space(10)
+            spacing: Style.space(6)
             visible: !root.ready
 
             PanelSeparator { width: parent.width }
@@ -432,7 +432,7 @@ Panel {
           Column {
             id: mainContent
             width: parent.width
-            spacing: Style.space(10)
+            spacing: Style.space(6)
             visible: root.ready
 
             // ---------- Graph ----------
