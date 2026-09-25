@@ -130,9 +130,19 @@ Panel {
     flagProc.command = ["sh", "-c", on ? "touch \"" + openFlag + "\"" : "rm -f \"" + openFlag + "\""]
     flagProc.running = true
   }
+  // A click on our own bar icon is also an "outside click": Hyprland's bind fires on press
+  // (~40 ms later via qs ipc) while the icon toggles on release, so the outside click closed the
+  // panel and the release re-opened it. Remember when an outside click closed it and let the
+  // icon ignore a toggle that follows within half a second.
+  property real outsideClosedAt: 0
   function outsideClick() {
     if (!root.opened || cardHover.hovered) return
+    root.outsideClosedAt = Date.now()
     root.close()
+  }
+  function iconToggle() {
+    if (!root.opened && Date.now() - root.outsideClosedAt < 500) return
+    root.toggle()
   }
   Connections {
     target: root
@@ -250,7 +260,7 @@ Panel {
     bar: root.bar
     text: root.glyph
     tooltipText: "Pointer & scroll speed"
-    onPressed: function(b) { root.toggle() }
+    onPressed: function(b) { root.iconToggle() }
   }
 
   // ---- panel ---------------------------------------------------------------------------
