@@ -4,7 +4,7 @@ A top-bar widget for [Omarchy](https://omarchy.org) that makes your touchpad **p
 slowly and fast when you flick**, for both the pointer and two-finger scrolling, with a live graph
 of the curves.
 
-![Pointer & Scroll panel](docs/panel.png)
+![Pointer & Scroll panel](preview.png)
 
 ## Why
 
@@ -59,7 +59,7 @@ Click the mouse icon (󰍽) in the top bar, then **Set up**. Setup adds one line
 require("hypr.pointer_scroll")
 ```
 
-Requirements: an Omarchy release with the Lua Hyprland config (`~/.config/hypr/hyprland.lua`).
+Requirements: an Omarchy release with the Lua Hyprland config (`~/.config/hypr/hyprland.lua`), and `python3` (standard library only; Omarchy ships it).
 
 ## How it works
 
