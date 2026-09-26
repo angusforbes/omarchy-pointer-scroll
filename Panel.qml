@@ -30,7 +30,8 @@ Panel {
   // backend script shipped inside the plugin folder
   readonly property string cli: String(Qt.resolvedUrl("bin/pointer-scroll")).replace(/^file:\/\//, "")
   // set up = input.lua loads the generated config (the panel offers a one-click "Set up" otherwise)
-  readonly property bool ready: st.installed !== false
+  readonly property var conflicts: st.conflicts || []
+  readonly property bool ready: st.installed !== false && conflicts.length === 0
   property var draft: ({})          // values being dragged, not yet applied
   property string lastError: ""
   property bool busy: false
@@ -408,13 +409,15 @@ Panel {
               wrapMode: Text.WordWrap
               text: root.st.lua_config === false
                     ? "This widget needs Omarchy's Lua Hyprland config (~/.config/hypr/hyprland.lua)."
-                    : "One-time setup: this adds one line to ~/.config/hypr/input.lua so Hyprland loads the settings from this panel. Your input.lua is backed up first, and uninstalling removes the line again."
+                    : root.conflicts.length > 0
+                    ? root.conflicts.join(" and ") + (root.conflicts.length === 1 ? " already exists and wasn't" : " already exist and weren't") + " created by this widget, so it won't touch " + (root.conflicts.length === 1 ? "it" : "them") + ". Move or rename " + (root.conflicts.length === 1 ? "it" : "them") + ", then reopen this panel."
+                    : "One-time setup: this creates ~/.config/hypr/pointer_scroll.lua (generated settings) and pointer_scroll.json (your slider values), and adds one line to ~/.config/hypr/input.lua to load them. input.lua is backed up first. Uninstalling removes the line and the generated file; files it didn't create are never replaced or deleted."
               color: root.bar.foreground
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.body
             }
             Button {
-              visible: root.st.lua_config !== false
+              visible: root.st.lua_config !== false && root.conflicts.length === 0
               text: root.busy ? "Setting up…" : "Set up"
               bordered: true
               foreground: root.bar.foreground
