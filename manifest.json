@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "angusforbes.pointer-scroll",
   "name": "Pointer & Scroll",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "author": "Angus Forbes",
   "license": "MIT",
   "description": "Touchpad pointer and scroll acceleration for Omarchy: slow finger = precise, fast flick = far, with a live curve graph.",
