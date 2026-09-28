@@ -179,9 +179,11 @@ def derived(s):
 # ---------------------------------------------------------------------------------------- render
 CLICK_WATCH = """-- Close the Pointer & Scroll panel on any click outside it, like the other bar panels, without
 -- blocking pointer movement or scrolling elsewhere. Non-consuming: the click still reaches whatever
--- you clicked. Inert unless the panel's "open" flag file exists.
-local pointer_scroll_flag = (os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/omarchy-pointer-scroll-open"
+-- you clicked. Inert unless the panel's "open" flag file exists (only ever in $XDG_RUNTIME_DIR).
+local pointer_scroll_rt = os.getenv("XDG_RUNTIME_DIR")
+local pointer_scroll_flag = pointer_scroll_rt and (pointer_scroll_rt .. "/omarchy-pointer-scroll-open")
 local function pointer_scroll_click()
+  if not pointer_scroll_flag then return end
   local f = io.open(pointer_scroll_flag, "r")
   if f then
     f:close()
