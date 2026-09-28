@@ -109,13 +109,9 @@ def owns(path):
         data = json.loads(text)
     except ValueError:
         return False
-    if not isinstance(data, dict):
-        return False
-    if data.get("_generator") == GENERATOR:
-        return True
-    # settings files written by versions before 0.2.0 had no "_generator": accept only a file made
-    # entirely of this tool's own setting names
-    return bool(data) and set(data) <= set(DEFAULTS)
+    # only the "_generator" marker proves ownership; a markerless file is someone else's, even if its
+    # keys happen to match our setting names
+    return isinstance(data, dict) and data.get("_generator") == GENERATOR
 
 
 def conflicts():
